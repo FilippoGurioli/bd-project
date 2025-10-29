@@ -1,0 +1,26 @@
+Dataset
+
+Name: NYC Taxi & Limousine Commission (TLC) Trip Record Data
+Source link: [NYC TLC Trip Record Data](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page?utm_source=chatgpt.com)
+
+Main Job
+
+Objective: Analyze taxi trips across NYC boroughs over time, computing trends in trip volume, average distance, and tips.
+
+Execution plan:
+
+Join stage (1st shuffle):
+- Join trip data with the zone lookup table to attach PU_Borough and DO_Borough names to each trip.
+
+First aggregation (pre-aggregation):
+- Group by PU_Borough and pickup_date.
+- Compute num_trips, avg_distance, and avg_tip per borough per day.
+
+Second aggregation (further aggregation / 2nd shuffle):
+- Group by PU_Borough and month (or week).
+- Compute average daily trips, average trip distance, and average tip per borough per month.
+
+Optional visualizations:
+- Time series of trips, distance, and tips per borough.
+- Comparison of boroughs or neighborhoods.
+
