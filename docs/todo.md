@@ -9,7 +9,7 @@
 | Notify the teacher                                                         | TODO       |
 | Load dataset on S3                                                         | TODO       |
 | Develop jobs (opt and non-opt) in the notebook over sample data            | ✅          |
-| Develop application for aws with both versions of the job and full dataset | TODO       |
+| Develop application for aws with both versions of the job and full dataset | ✅          |
 | Run both jobs on AWS                                                       | TODO       |
 | Download results (equals for both jobs) and histories (different per job)  | TODO       |
 | Analyze results with matplotlib/Power BI/Tableau                           | TODO       |

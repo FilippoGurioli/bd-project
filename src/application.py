@@ -1,12 +1,14 @@
 """
 NYC Taxi Tip Analysis - Big Data Project
-Implements two pipelines: non-optimized and optimized
+Implements two pipelines: non-optimized (groupByKey) and optimized (broadcast + reduceByKey)
 """
 import argparse
 import json
 import time
 from datetime import datetime
+
 from pyspark.sql import SparkSession
+
 
 def safe_hour(value):
     """Extract hour from datetime."""
@@ -21,15 +23,38 @@ def safe_hour(value):
     except:
         return -1
 
+
+def expand_path(path):
+    """Expand wildcards in local paths"""
+    import glob
+    import os
+    
+    # If it's S3 or already a directory, return as-is
+    if path.startswith('s3://') or path.startswith('s3a://') or os.path.isdir(path):
+        return path
+    
+    # If it contains wildcard, expand it
+    if '*' in path or '?' in path:
+        files = glob.glob(path)
+        if not files:
+            raise ValueError(f"No files found matching pattern: {path}")
+        # Return comma-separated paths for Spark
+        return ','.join(files)
+    
+    return path
+
+
 def run_non_optimized(spark, trips_path, zones_path):
-    """Non-optimized pipeline"""
+    """Non-optimized pipeline: join + groupByKey (multiple shuffles)"""
     print("\n" + "="*60)
     print("RUNNING NON-OPTIMIZED PIPELINE")
     print("="*60)
     
     t_start = time.time()
-    # Load data
-    df_trips = spark.read.parquet(trips_path).select(
+    
+    # Load data (expand wildcards for local files)
+    expanded_trips = expand_path(trips_path)
+    df_trips = spark.read.parquet(expanded_trips).select(
         "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
     )
     rdd_trips = df_trips.rdd.map(lambda r: (
@@ -58,7 +83,7 @@ def run_non_optimized(spark, trips_path, zones_path):
     
     t_derived = time.time()
     
-    # Aggregate by (zone, hour) - (SHUFFLE 2)
+    # Aggregate by (zone, hour) using groupByKey (SHUFFLE 2)
     rdd_zone_hour = rdd_derived.map(lambda x: ((x[0], x[1], x[2], x[3]), x[6]))
     rdd_grouped = rdd_zone_hour.groupByKey()
     rdd_agg_hour = rdd_grouped.map(lambda x: (
@@ -69,7 +94,7 @@ def run_non_optimized(spark, trips_path, zones_path):
     
     t_agg_hour = time.time()
     
-    # Aggregate across hours (SHUFFLE 3)
+    # Aggregate across hours using groupByKey (SHUFFLE 3)
     rdd_zone_tmp = rdd_agg_hour.map(lambda x: ((x[0], x[1], x[2]), (x[4], x[5])))
     rdd_grouped_zone = rdd_zone_tmp.groupByKey()
     rdd_agg_zone = rdd_grouped_zone.map(lambda x: (
@@ -101,7 +126,7 @@ def run_non_optimized(spark, trips_path, zones_path):
 
 
 def run_optimized(spark, trips_path, zones_path):
-    """Optimized pipeline"""
+    """Optimized pipeline: broadcast + reduceByKey + partitioning"""
     print("\n" + "="*60)
     print("RUNNING OPTIMIZED PIPELINE")
     print("="*60)
@@ -109,8 +134,9 @@ def run_optimized(spark, trips_path, zones_path):
     sc = spark.sparkContext
     t_start = time.time()
     
-    # Load trips
-    df_trips = spark.read.parquet(trips_path).select(
+    # Load trips (expand wildcards for local files)
+    expanded_trips = expand_path(trips_path)
+    df_trips = spark.read.parquet(expanded_trips).select(
         "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
     )
     rdd_trips = df_trips.rdd.map(lambda r: (
@@ -118,7 +144,7 @@ def run_optimized(spark, trips_path, zones_path):
         (r.tpep_pickup_datetime, float(r.fare_amount or 0.0), float(r.tip_amount or 0.0))
     ))
     
-    # Load and broadcast zones (no shuffle)
+    # Load and broadcast zones (no shuffle join!)
     df_zones = spark.read.csv(zones_path, header=True)
     zones_map = {int(r['LocationID']): (r['Borough'], r['Zone']) for r in df_zones.collect()}
     b_zones = sc.broadcast(zones_map)
@@ -133,7 +159,7 @@ def run_optimized(spark, trips_path, zones_path):
         borough, zone = b_zones.value.get(pu_id, ("Unknown", "Unknown"))
         return ((pu_id, borough, zone, hour), (tip_pct, 1))
     
-    # Aggregate by (zone, hour) - (SHUFFLE 1)
+    # Aggregate by (zone, hour) using reduceByKey (SHUFFLE 1)
     rdd_zone_hour_agg = rdd_trips.map(enrich_trip).reduceByKey(lambda a, b: (a[0] + b[0], a[1] + b[1]))
     
     t_agg_hour = time.time()
@@ -149,7 +175,7 @@ def run_optimized(spark, trips_path, zones_path):
     
     t_partition = time.time()
     
-    # Aggregate across hours (SHUFFLE 2)
+    # Aggregate across hours using reduceByKey (SHUFFLE 2)
     rdd_zone_agg = rdd_zone_hour_avg.map(lambda kv: (kv[0], (kv[1], 1))) \
         .reduceByKey(lambda a, b: (a[0] + b[0], a[1] + b[1])) \
         .map(lambda kv: (kv[0][0], kv[0][1], kv[0][2], kv[1][0] / kv[1][1], kv[1][1]))
@@ -164,7 +190,7 @@ def run_optimized(spark, trips_path, zones_path):
     
     print(f"Load + broadcast: {t_load - t_start:.2f}s")
     print(f"Agg by hour:      {t_agg_hour - t_load:.2f}s")
-    print(f"Partition+cache:  {t_partition - t_agg_hour:.2f}s")
+    print(f"Partition + cache:  {t_partition - t_agg_hour:.2f}s")
     print(f"Agg by zone:      {t_agg_zone - t_partition:.2f}s")
     print(f"Sort:             {t_end - t_agg_zone:.2f}s")
     print(f"TOTAL:            {t_end - t_start:.2f}s")
@@ -178,6 +204,13 @@ def run_optimized(spark, trips_path, zones_path):
 
 def save_results(result, output_path, job_name):
     """Save results to JSON and CSV"""
+    import os
+    
+    # Create output directory if it doesn't exist
+    output_dir = os.path.dirname(output_path)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    
     with open(f"{output_path}_{job_name}.json", "w") as f:
         json.dump(result, f, indent=2)
     
@@ -186,17 +219,21 @@ def save_results(result, output_path, job_name):
         for r in result['top_zones']:
             f.write(f'{r[0]},"{r[1]}","{r[2]}",{r[3]},{r[4]}\n')
     
-    print(f"Saved results to {output_path}_{job_name}.*")
+    print(f"Saved results to {output_path}_{job_name}.[json|csv].")
 
 
 def main():
     parser = argparse.ArgumentParser(description="NYC Taxi Tip Analysis")
-    parser.add_argument("--trips", default="sample_data/yellow_tripdata_2025-01.parquet")
+    parser.add_argument("--trips", default="sample_data/yellow_tripdata_2025-01.parquet",
+                       help="Path to trips parquet file(s). Supports wildcards (e.g., 'data/*.parquet')")
     parser.add_argument("--zones", default="sample_data/taxi_zone_lookup.csv")
     parser.add_argument("--output", default="output/results")
     parser.add_argument("--job", choices=["1", "2", "both"], default="both",
                        help="1=non-optimized, 2=optimized, both=run both")
     args = parser.parse_args()
+    
+    print(f"Loading trips from: {args.trips}")
+    print(f"Loading zones from: {args.zones}")
     
     spark = SparkSession.builder.appName("NYC Taxi Analysis").getOrCreate()
     
@@ -218,7 +255,9 @@ def main():
         opt_time = results['optimized']['total_time']
         speedup = non_time / opt_time
         print(f"\nSpeedup: {speedup:.2f}x (saved {non_time - opt_time:.2f}s)")
+    
     spark.stop()
+
 
 if __name__ == '__main__':
     main()
