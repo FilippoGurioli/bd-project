@@ -19,6 +19,6 @@ Source link: [NYC TLC Trip Record Data](https://www.nyc.gov/site/tlc/about/tlc-t
 #### Shuffles
 
 - join zones id with zone lookup table
-- aggregate per location and hour
-- aggregate per average tip percentage
+- aggregate by Pickup Zone and Hour
+- aggregate across Hours
 - order by average tip percentage
