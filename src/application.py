@@ -5,9 +5,30 @@ Implements two pipelines: non-optimized (groupByKey) and optimized (broadcast + 
 import argparse
 import json
 import time
+import os
 from datetime import datetime
 
 from pyspark.sql import SparkSession
+
+
+def create_spark_session(app_name="NYC Taxi Analysis"):
+    """Create Spark session with S3A configuration for LocalStack if needed"""
+    builder = SparkSession.builder.appName(app_name)
+    
+    # Check if we're using LocalStack (endpoint set)
+    s3_endpoint = os.environ.get("FS_S3A_ENDPOINT")
+    if s3_endpoint:
+        print(f"Configuring Spark for LocalStack: {s3_endpoint}")
+        builder = builder \
+            .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint) \
+            .config("spark.hadoop.fs.s3a.access.key", os.environ.get("AWS_ACCESS_KEY_ID", "test")) \
+            .config("spark.hadoop.fs.s3a.secret.key", os.environ.get("AWS_SECRET_ACCESS_KEY", "test")) \
+            .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+            .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false") \
+            .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+            .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+    
+    return builder.getOrCreate()
 
 
 def safe_hour(value):
@@ -28,18 +49,23 @@ def expand_path(path):
     """Expand wildcards in local paths"""
     import glob
     import os
-    
-    # If it's S3 or already a directory, return as-is
-    if path.startswith('s3://') or path.startswith('s3a://') or os.path.isdir(path):
+
+    # If it's S3, return as-is (S3 handles wildcards natively)
+    if path.startswith('s3://') or path.startswith('s3a://'):
         return path
-    
-    # If it contains wildcard, expand it
+
+    # If it's a directory, return as-is (Spark reads all parquet files)
+    if os.path.isdir(path):
+        return path
+
+    # If it contains wildcard, expand it and return as list
     if '*' in path or '?' in path:
         files = glob.glob(path)
         if not files:
             raise ValueError(f"No files found matching pattern: {path}")
-        # Return comma-separated paths for Spark
-        return ','.join(files)
+        # Return list of paths for Spark
+        print(files)
+        return files  # Spark can handle a list directly
     
     return path
 
@@ -54,9 +80,14 @@ def run_non_optimized(spark, trips_path, zones_path):
     
     # Load data (expand wildcards for local files)
     expanded_trips = expand_path(trips_path)
-    df_trips = spark.read.parquet(expanded_trips).select(
-        "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
-    )
+    if isinstance(expanded_trips, list):
+        df_trips = spark.read.parquet(*expanded_trips).select(
+            "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
+        )
+    else:
+        df_trips = spark.read.parquet(expanded_trips).select(
+            "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
+        )
     rdd_trips = df_trips.rdd.map(lambda r: (
         int(r.PULocationID or -1),
         (r.tpep_pickup_datetime, float(r.fare_amount or 0.0), float(r.tip_amount or 0.0))
@@ -136,9 +167,14 @@ def run_optimized(spark, trips_path, zones_path):
     
     # Load trips (expand wildcards for local files)
     expanded_trips = expand_path(trips_path)
-    df_trips = spark.read.parquet(expanded_trips).select(
-        "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
-    )
+    if isinstance(expanded_trips, list):
+        df_trips = spark.read.parquet(*expanded_trips).select(
+            "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
+        )
+    else:
+        df_trips = spark.read.parquet(expanded_trips).select(
+            "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
+        )
     rdd_trips = df_trips.rdd.map(lambda r: (
         int(r.PULocationID or -1),
         (r.tpep_pickup_datetime, float(r.fare_amount or 0.0), float(r.tip_amount or 0.0))
@@ -235,7 +271,7 @@ def main():
     print(f"Loading trips from: {args.trips}")
     print(f"Loading zones from: {args.zones}")
     
-    spark = SparkSession.builder.appName("NYC Taxi Analysis").getOrCreate()
+    spark = create_spark_session("NYC Taxi Analysis")
     
     results = {}
     

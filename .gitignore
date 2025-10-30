@@ -209,3 +209,4 @@ __marimo__/
 sample_data/
 job_history/
 *.pyc
+output/
