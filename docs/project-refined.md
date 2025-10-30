@@ -29,7 +29,7 @@
 | Requirement                                                                | Completion |
 | -------------------------------------------------------------------------- | ---------- |
 | Find a suitable dataset                                                    | ✅          |
-| Choose main job (i.e. how to transform data)                               | TODO       |
+| Choose main job (i.e. how to transform data)                               |  ✅         |
 | Notify the teacher                                                         | TODO       |
 | Load dataset on S3                                                         | TODO       |
 | Develop jobs (opt and non-opt) in the notebook over sample data            | TODO       |
