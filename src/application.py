@@ -12,21 +12,19 @@ from pyspark.sql import SparkSession
 
 
 def create_spark_session(app_name="NYC Taxi Analysis"):
-    """Create Spark session with S3A configuration for LocalStack if needed"""
+    """Create Spark session - automatically detects environment"""
     builder = SparkSession.builder.appName(app_name)
     
-    # Check if we're using LocalStack (endpoint set)
-    s3_endpoint = os.environ.get("FS_S3A_ENDPOINT")
-    if s3_endpoint:
-        print(f"Configuring Spark for LocalStack: {s3_endpoint}")
-        builder = builder \
-            .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint) \
-            .config("spark.hadoop.fs.s3a.access.key", os.environ.get("AWS_ACCESS_KEY_ID", "test")) \
-            .config("spark.hadoop.fs.s3a.secret.key", os.environ.get("AWS_SECRET_ACCESS_KEY", "test")) \
-            .config("spark.hadoop.fs.s3a.path.style.access", "true") \
-            .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false") \
-            .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-            .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+    # Auto-detect if we're running on AWS EMR (has AWS-specific configs)
+    try:
+        from pyspark.conf import SparkConf
+        conf = SparkConf()
+        if conf.get("spark.yarn.appMasterEnv.AWS_ACCESS_KEY_ID", None):
+            print("Running on AWS EMR - using default S3 configuration")
+        else:
+            print("Running locally - using local filesystem")
+    except:
+        print("Running locally - using local filesystem")
     
     return builder.getOrCreate()
 
@@ -45,31 +43,6 @@ def safe_hour(value):
         return -1
 
 
-def expand_path(path):
-    """Expand wildcards in local paths"""
-    import glob
-    import os
-
-    # If it's S3, return as-is (S3 handles wildcards natively)
-    if path.startswith('s3://') or path.startswith('s3a://'):
-        return path
-
-    # If it's a directory, return as-is (Spark reads all parquet files)
-    if os.path.isdir(path):
-        return path
-
-    # If it contains wildcard, expand it and return as list
-    if '*' in path or '?' in path:
-        files = glob.glob(path)
-        if not files:
-            raise ValueError(f"No files found matching pattern: {path}")
-        # Return list of paths for Spark
-        print(files)
-        return files  # Spark can handle a list directly
-    
-    return path
-
-
 def run_non_optimized(spark, trips_path, zones_path):
     """Non-optimized pipeline: join + groupByKey (multiple shuffles)"""
     print("\n" + "="*60)
@@ -78,16 +51,10 @@ def run_non_optimized(spark, trips_path, zones_path):
     
     t_start = time.time()
     
-    # Load data (expand wildcards for local files)
-    expanded_trips = expand_path(trips_path)
-    if isinstance(expanded_trips, list):
-        df_trips = spark.read.parquet(*expanded_trips).select(
-            "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
-        )
-    else:
-        df_trips = spark.read.parquet(expanded_trips).select(
-            "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
-        )
+    # Load data
+    df_trips = spark.read.parquet(trips_path).select(
+        "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
+    )
     rdd_trips = df_trips.rdd.map(lambda r: (
         int(r.PULocationID or -1),
         (r.tpep_pickup_datetime, float(r.fare_amount or 0.0), float(r.tip_amount or 0.0))
@@ -165,16 +132,10 @@ def run_optimized(spark, trips_path, zones_path):
     sc = spark.sparkContext
     t_start = time.time()
     
-    # Load trips (expand wildcards for local files)
-    expanded_trips = expand_path(trips_path)
-    if isinstance(expanded_trips, list):
-        df_trips = spark.read.parquet(*expanded_trips).select(
-            "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
-        )
-    else:
-        df_trips = spark.read.parquet(expanded_trips).select(
-            "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
-        )
+    # Load trips
+    df_trips = spark.read.parquet(trips_path).select(
+        "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
+    )
     rdd_trips = df_trips.rdd.map(lambda r: (
         int(r.PULocationID or -1),
         (r.tpep_pickup_datetime, float(r.fare_amount or 0.0), float(r.tip_amount or 0.0))
@@ -239,37 +200,58 @@ def run_optimized(spark, trips_path, zones_path):
 
 
 def save_results(result, output_path, job_name):
-    """Save results to JSON and CSV"""
+    """Save results to JSON and CSV - works for both local and S3 paths"""
     import os
     
-    # Create output directory if it doesn't exist
-    output_dir = os.path.dirname(output_path)
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
+    # Check if it's a local path
+    if not output_path.startswith(('s3://', 's3a://')):
+        # Create output directory if it doesn't exist
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
     
-    with open(f"{output_path}_{job_name}.json", "w") as f:
-        json.dump(result, f, indent=2)
+    # For local files, write directly
+    if not output_path.startswith(('s3://', 's3a://')):
+        with open(f"{output_path}_{job_name}.json", "w") as f:
+            json.dump(result, f, indent=2)
+        
+        with open(f"{output_path}_{job_name}.csv", "w") as f:
+            f.write("PULocationID,Borough,Zone,avg_tip_pct,count\n")
+            for r in result['top_zones']:
+                f.write(f'{r[0]},"{r[1]}","{r[2]}",{r[3]},{r[4]}\n')
+        
+        print(f"Saved results to {output_path}_{job_name}.[json|csv]")
     
-    with open(f"{output_path}_{job_name}.csv", "w") as f:
-        f.write("PULocationID,Borough,Zone,avg_tip_pct,count\n")
-        for r in result['top_zones']:
-            f.write(f'{r[0]},"{r[1]}","{r[2]}",{r[3]},{r[4]}\n')
-    
-    print(f"Saved results to {output_path}_{job_name}.[json|csv].")
+    else:
+        # For S3 paths, we need to use Spark to write
+        spark = SparkSession.builder.getOrCreate()
+        
+        # Convert results to DataFrame and write
+        rows = [{"PULocationID": r[0], "Borough": r[1], "Zone": r[2], 
+                "avg_tip_pct": r[3], "count": r[4]} for r in result['top_zones']]
+        
+        df = spark.createDataFrame(rows)
+        df.coalesce(1).write.mode("overwrite").json(f"{output_path}_{job_name}.json")
+        df.coalesce(1).write.mode("overwrite").csv(f"{output_path}_{job_name}.csv", header=True)
+        
+        print(f"Saved results to {output_path}_{job_name}.[json|csv] on S3")
 
 
 def main():
     parser = argparse.ArgumentParser(description="NYC Taxi Tip Analysis")
-    parser.add_argument("--trips", default="sample_data/yellow_tripdata_2025-01.parquet",
-                       help="Path to trips parquet file(s). Supports wildcards (e.g., 'data/*.parquet')")
-    parser.add_argument("--zones", default="sample_data/taxi_zone_lookup.csv")
-    parser.add_argument("--output", default="output/results")
+    parser.add_argument("--trips", required=True,
+                       help="Path to trips parquet file(s). Local or s3a:// paths")
+    parser.add_argument("--zones", required=True,
+                       help="Path to zones CSV file. Local or s3a:// paths")
+    parser.add_argument("--output", required=True,
+                       help="Output path for results. Local or s3a:// paths")
     parser.add_argument("--job", choices=["1", "2", "both"], default="both",
                        help="1=non-optimized, 2=optimized, both=run both")
     args = parser.parse_args()
     
     print(f"Loading trips from: {args.trips}")
     print(f"Loading zones from: {args.zones}")
+    print(f"Output to: {args.output}")
     
     spark = create_spark_session("NYC Taxi Analysis")
     
