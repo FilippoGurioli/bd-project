@@ -52,7 +52,7 @@ def run_non_optimized(spark, trips_path, zones_path):
     t_start = time.time()
     
     # Load data
-    df_trips = spark.read.option("mergeSchema", "true").drop("congestion_surcharge", "airport_fee").parquet(trips_path).select(
+    df_trips = spark.read.option("mergeSchema", "true").parquet(trips_path).drop("congestion_surcharge", "airport_fee").select(
         "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
     )
     rdd_trips = df_trips.rdd.map(lambda r: (
@@ -133,7 +133,7 @@ def run_optimized(spark, trips_path, zones_path):
     t_start = time.time()
     
     # Load trips
-    df_trips = spark.read.option("mergeSchema", "true").drop("congestion_surcharge", "airport_fee").parquet(trips_path).select(
+    df_trips = spark.read.option("mergeSchema", "true").parquet(trips_path).drop("congestion_surcharge", "airport_fee").select(
         "PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount"
     )
     rdd_trips = df_trips.rdd.map(lambda r: (
