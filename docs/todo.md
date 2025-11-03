@@ -6,8 +6,8 @@
 | -------------------------------------------------------------------------- | ---------- |
 | Find a suitable dataset                                                    | ✅          |
 | Choose main job (i.e. how to transform data)                               | ✅          |
-| Notify the teacher                                                         | TODO       |
-| Load dataset on S3                                                         | TODO       |
+| Notify the teacher                                                         | ✅       |
+| Load dataset on S3                                                         | ✅       |
 | Develop jobs (opt and non-opt) in the notebook over sample data            | ✅          |
 | Develop application for aws with both versions of the job and full dataset | ✅          |
 | Run both jobs on AWS                                                       | TODO       |
