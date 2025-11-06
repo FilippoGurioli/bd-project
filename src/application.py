@@ -12,20 +12,24 @@ from pyspark.sql import SparkSession
 
 
 def create_spark_session(app_name="NYC Taxi Analysis"):
-    """Create Spark session - automatically detects environment"""
-    builder = SparkSession.builder.appName(app_name)
-    
-    # Auto-detect if we're running on AWS EMR (has AWS-specific configs)
-    try:
-        from pyspark.conf import SparkConf
-        conf = SparkConf()
-        if conf.get("spark.yarn.appMasterEnv.AWS_ACCESS_KEY_ID", None):
-            print("Running on AWS EMR - using default S3 configuration")
-        else:
-            print("Running locally - using local filesystem")
-    except:
-        print("Running locally - using local filesystem")
-    
+    """Create Spark session for local or EMR automatically"""
+    from pyspark.sql import SparkSession
+
+    builder = (
+        SparkSession.builder
+        .appName(app_name)
+        .config("spark.sql.session.timeZone", "UTC")
+        .config("spark.hadoop.fs.s3a.aws.credentials.provider",
+                "com.amazonaws.auth.InstanceProfileCredentialsProvider")
+    )
+
+    # Detect environment
+    master = os.environ.get("SPARK_MASTER", "")
+    if "yarn" in master.lower():
+        print("Running on YARN (EMR)")
+    else:
+        print("Running on local mode")
+
     return builder.getOrCreate()
 
 
