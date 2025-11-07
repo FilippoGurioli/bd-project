@@ -1,6 +1,6 @@
 #!/bin/bash
 
-if [ $# -e 0 ]; then
+if [ $# -eq 0 ]; then
   echo "Pass cluster id as first parameter"
   return 0
 fi
