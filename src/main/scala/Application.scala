@@ -222,22 +222,42 @@ object Application {
         Commons.getDatasetPath(deploymentMode, "trips/")
     val zonesPath = Commons.getDatasetPath(deploymentMode, "zones/taxi_zone_lookup.csv")
     val outputPath = Commons.getDatasetPath(writeMode, "output/results")
+    val sqlContext = spark.sqlContext
+    import sqlContext.implicits._
+  
+    // Get list of all parquet files
+    val df = spark.read.parquet(tripsPath)
+    val files = df.inputFiles  // This gets all the actual file paths
 
-    // Initialize Input
-    val rddTrips: RDD[(Long, (Any, Double, Double))] = spark.read
-      .parquet(tripsPath)
-      .drop("congestion_surcharge", "airport_fee")
-      .select(
-        col("PULocationID"),
-        col("tpep_pickup_datetime"),
-        col("fare_amount"),
-        col("tip_amount")
-      ).rdd.map { r => 
-      val id = safeLong(r.get(0))
-      val ts = r.get(1)
-      val fare = if (r.isNullAt(2)) 0.0 else r.getDouble(2)
-      val tip = if (r.isNullAt(3)) 0.0 else r.getDouble(3)
-      (id, (ts, fare, tip))
+    println(s"Found ${files.length} parquet files")
+
+    // Process each file
+    val individualRdds = files.map { filePath =>
+      println(s"Processing: $filePath")
+  
+      spark.read
+        .parquet(filePath)
+        .select(
+          col("PULocationID").cast(LongType).as("PULocationID"),
+          col("tpep_pickup_datetime"),
+          col("fare_amount"),
+          col("tip_amount")
+        )
+        .rdd
+        .map { r => 
+          val id = safeLong(r.get(0))
+          val ts = r.get(1)
+          val fare = if (r.isNullAt(2)) 0.0 else r.getDouble(2)
+          val tip = if (r.isNullAt(3)) 0.0 else r.getDouble(3)
+          (id, (ts, fare, tip))
+        }
+    }
+
+    // Union all RDDs
+    val rddTrips = if (individualRdds.length > 1) {
+      spark.sparkContext.union(individualRdds)
+    } else {
+      individualRdds.head
     }
 
     val rddZones: RDD[(Long, (String, String))] = spark
