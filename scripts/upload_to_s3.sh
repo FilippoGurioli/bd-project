@@ -2,7 +2,7 @@
 
 echo "=== Uploading Data to AWS S3 ==="
 
-BUCKET_NAME="unibo-31-10-fgurioli" # Change this!
+BUCKET_NAME="unibo-31-10-fgurioli"
 
 # Check if AWS CLI is configured
 aws sts get-caller-identity >/dev/null 2>&1
