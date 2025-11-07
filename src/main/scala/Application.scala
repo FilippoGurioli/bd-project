@@ -287,7 +287,10 @@ object Application {
     Commons.initializeSparkContext(deploymentMode, spark)
 
     // Get dataset paths
-    val tripsPath = Commons.getDatasetPath(deploymentMode, "trips/yellow_tripdata_2022-03.parquet")
+    val tripsPath = if (deploymentMode == "local") 
+      Commons.getDatasetPath(deploymentMode, "trips/yellow_tripdata_2022-03.parquet")
+    else
+      Commons.getDatasetPath(deploymentMode, "trips/")
     val zonesPath = Commons.getDatasetPath(deploymentMode, "zones/taxi_zone_lookup.csv")
     val outputPath = Commons.getDatasetPath(writeMode, "output/results")
 println(s"Deployment mode: $deploymentMode")
