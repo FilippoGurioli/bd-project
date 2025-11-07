@@ -2,6 +2,7 @@ package project
 
 import org.apache.spark.sql.{SparkSession, SaveMode}
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.functions._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.HashPartitioner
@@ -61,10 +62,14 @@ object Application {
 
     // Load trips
     val dfTrips = spark.read
-      .option("mergeSchema", "true")
       .parquet(tripsPath)
       .drop("congestion_surcharge", "airport_fee")
-      .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
+      .select(
+        col("PULocationID").cast(LongType).as("PULocationID"),
+        col("tpep_pickup_datetime"),
+        col("fare_amount"),
+        col("tip_amount")
+      )
     
     // Always treat PULocationID as Long
     val rddTrips: RDD[(Long, (Any, Double, Double))] = dfTrips.rdd.map { r =>
@@ -157,7 +162,12 @@ object Application {
       .option("mergeSchema", "true")
       .parquet(tripsPath)
       .drop("congestion_surcharge", "airport_fee")
-      .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
+      .select(
+        col("PULocationID").cast(LongType).as("PULocationID"),
+        col("tpep_pickup_datetime"),
+        col("fare_amount"),
+        col("tip_amount")
+      )
     
     val rddTrips: RDD[(Long, (Any, Double, Double))] = dfTrips.rdd.map { r =>
       val id = safeLong(r.get(0))
@@ -262,7 +272,7 @@ object Application {
 
     val tripsPath =
       if (deploymentMode == "local")
-        Commons.getDatasetPath(deploymentMode, "trips/yellow_tripdata_2022-03.parquet")
+        Commons.getDatasetPath(deploymentMode, "trips/yellow_tripdata_2022-01.parquet")
       else
         Commons.getDatasetPath(deploymentMode, "trips/")
     val zonesPath = Commons.getDatasetPath(deploymentMode, "zones/taxi_zone_lookup.csv")

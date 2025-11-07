@@ -1,12 +1,10 @@
 #!/bin/bash
 
-if [ $# -eq 0 ]; then
-  echo "Pass cluster name as first parameter"
-  exit
-fi
+CURRENT_NUMBER=$(aws emr list-clusters | jq -r ".Clusters[0].Name" | cut -d' ' -f2)
+NEW_NUMBER=$((CURRENT_NUMBER + 1))
 
 aws emr create-cluster \
-  --name "Cluster $1" \
+  --name "Cluster $NEW_NUMBER" \
   --release-label "emr-7.3.0" \
   --applications Name=Hadoop Name=Spark \
   --instance-groups InstanceGroupType=MASTER,InstanceCount=1,InstanceType=m5.xlarge InstanceGroupType=CORE,InstanceCount=2,InstanceType=m5.xlarge \
