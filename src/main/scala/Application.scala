@@ -22,12 +22,19 @@ object Application {
     }
   }
 
-  // def safeLong(value: Any): Long = value match {
-  //   case i: Int => i.toLong
-  //   case l: Long => l
-  //   case s: String => s.toLongOption.getOrElse(-1)
-  //   case _ => -1
-  // }
+  /** Safely cast any value to Long */
+  def safeLong(value: Any): Long = {
+    try {
+      value match {
+        case i: Int => i.toLong
+        case l: Long => l
+        case s: String => s.toLong
+        case _ => -1L
+      }
+    } catch {
+      case _: Exception => -1L
+    }
+  }
 
   /** Compute tip percentage safely */
   def tipPct(fare: Double, tip: Double): Double = {
@@ -56,23 +63,24 @@ object Application {
       .drop("congestion_surcharge", "airport_fee")
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
     
+    // Always treat PULocationID as Long
     val rddTrips: RDD[(Long, (Any, Double, Double))] = dfTrips.rdd.map { r =>
-      val id = if (r.isNullAt(0)) -1 else r.getLong(0)
+      val id = safeLong(r.get(0))
       val ts = r.get(1)
       val fare = if (r.isNullAt(2)) 0.0 else r.getDouble(2)
       val tip = if (r.isNullAt(3)) 0.0 else r.getDouble(3)
       (id, (ts, fare, tip))
     }
     
-    // Load zones
+    // Load zones and convert LocationID to Long as well
     val dfZones = spark.read.option("header", "true").csv(zonesPath)
     val rddZones: RDD[(Long, (String, String))] = dfZones.rdd.map { r =>
-      (r.getAs[String]("LocationID").toLong, (r.getAs[String]("Borough"), r.getAs[String]("Zone")))
+      (safeLong(r.getAs[String]("LocationID")), (r.getAs[String]("Borough"), r.getAs[String]("Zone")))
     }
     
     val tLoad = System.nanoTime()
     
-    // Join (SHUFFLE 1)
+    // Join (both sides Long → safe)
     val rddJoined = rddTrips.join(rddZones)
     
     // Compute tip percentage and hour
@@ -84,7 +92,7 @@ object Application {
     
     val tDerived = System.nanoTime()
     
-    // Aggregate by (zone, hour) using groupByKey (SHUFFLE 2)
+    // Aggregate by (zone, hour)
     val rddZoneHour = rddDerived.map(x => ((x._1, x._2, x._3, x._4), x._7))
     val rddGrouped = rddZoneHour.groupByKey()
     val rddAggHour = rddGrouped.map { case ((puId, borough, zone, hour), tips) =>
@@ -94,7 +102,7 @@ object Application {
     
     val tAggHour = System.nanoTime()
     
-    // Aggregate across hours using groupByKey (SHUFFLE 3)
+    // Aggregate across hours
     val rddZoneTmp = rddAggHour.map(x => ((x._1, x._2, x._3), (x._5, x._6)))
     val rddGroupedZone = rddZoneTmp.groupByKey()
     val rddAggZone = rddGroupedZone.map { case ((puId, borough, zone), vals) =>
@@ -106,22 +114,15 @@ object Application {
     
     val tAggZone = System.nanoTime()
     
-    // Sort (SHUFFLE 4)
+    // Sort
     val rddTop = rddAggZone.sortBy(_._4, ascending = false)
     val topZones = rddTop.take(20).toList
     
     val tEnd = System.nanoTime()
     
     // Print timing
-    println(f"Load time:      ${(tLoad - tStart) / 1e9}%.2fs")
-    println(f"Derived:        ${(tDerived - tLoad) / 1e9}%.2fs")
-    println(f"Agg by hour:    ${(tAggHour - tDerived) / 1e9}%.2fs")
-    println(f"Agg by zone:    ${(tAggZone - tAggHour) / 1e9}%.2fs")
-    println(f"Sort:           ${(tEnd - tAggZone) / 1e9}%.2fs")
-    println(f"TOTAL:          ${(tEnd - tStart) / 1e9}%.2fs")
-    println("=" * 60 + "\n")
+    println(f"TOTAL: ${(tEnd - tStart) / 1e9}%.2fs")
     
-    // Save results
     val dfResult = topZones.toDF("PULocationID", "Borough", "Zone", "avg_tip_pct", "count")
     dfResult.coalesce(1).write.mode(SaveMode.Overwrite).option("header", "true").csv(outputPath + "_non_optimized.csv")
     dfResult.coalesce(1).write.mode(SaveMode.Overwrite).json(outputPath + "_non_optimized.json")
@@ -154,24 +155,24 @@ object Application {
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
     
     val rddTrips: RDD[(Long, (Any, Double, Double))] = dfTrips.rdd.map { r =>
-      val id = if (r.isNullAt(0)) -1 else r.getLong(0)
+      val id = safeLong(r.get(0))
       val ts = r.get(1)
       val fare = if (r.isNullAt(2)) 0.0 else r.getDouble(2)
       val tip = if (r.isNullAt(3)) 0.0 else r.getDouble(3)
       (id, (ts, fare, tip))
     }
     
-    // Load and broadcast zones (no shuffle join!)
+    // Load and broadcast zones
     val dfZones = spark.read.option("header", "true").csv(zonesPath)
     val zonesMap = dfZones.rdd
-      .map(r => (r.getAs[String]("LocationID").toLong, (r.getAs[String]("Borough"), r.getAs[String]("Zone"))))
+      .map(r => (safeLong(r.getAs[String]("LocationID")), (r.getAs[String]("Borough"), r.getAs[String]("Zone"))))
       .collect()
       .toMap
     val bZones: Broadcast[Map[Long, (String, String)]] = sc.broadcast(zonesMap)
     
     val tLoad = System.nanoTime()
     
-    // Enrich with broadcast variable and aggregate by (zone, hour) using reduceByKey (SHUFFLE 1)
+    // Enrich + reduceByKey
     val enrichAndAggregate = rddTrips.map { case (puId, (ts, fare, tip)) =>
       val hour = safeHour(ts)
       val pct = tipPct(fare, tip)
@@ -183,22 +184,15 @@ object Application {
       (sum1 + sum2, cnt1 + cnt2)
     }
     
-    val tAggHour = System.nanoTime()
-    
-    // Convert to zone-level and partition
     val rddZoneHourAvg = rddZoneHourAgg.map { case ((puId, borough, zone, hour), (sum, count)) =>
       ((puId, borough, zone), sum / count)
     }
     
-    // Partition by zone and cache
     val rddPartitioned = rddZoneHourAvg.partitionBy(new HashPartitioner(8))
       .persist(StorageLevel.MEMORY_AND_DISK)
     
     rddPartitioned.count() // Force cache
     
-    val tPartition = System.nanoTime()
-    
-    // Aggregate across hours using reduceByKey (SHUFFLE 2)
     val rddZoneAgg = rddPartitioned
       .map { case (key, avgTip) => (key, (avgTip, 1)) }
       .reduceByKey { case ((sum1, cnt1), (sum2, cnt2)) => (sum1 + sum2, cnt1 + cnt2) }
@@ -206,33 +200,17 @@ object Application {
         (puId, borough, zone, sum / count, count)
       }
     
-    val tAggZone = System.nanoTime()
-    
-    // Sort (SHUFFLE 3)
     val rddTop = rddZoneAgg.sortBy(_._4, ascending = false)
     val topZones = rddTop.take(20).toList
     
-    val tEnd = System.nanoTime()
-    
-    // Print timing
-    println(f"Load + broadcast: ${(tLoad - tStart) / 1e9}%.2fs")
-    println(f"Agg by hour:      ${(tAggHour - tLoad) / 1e9}%.2fs")
-    println(f"Partition + cache:  ${(tPartition - tAggHour) / 1e9}%.2fs")
-    println(f"Agg by zone:      ${(tAggZone - tPartition) / 1e9}%.2fs")
-    println(f"Sort:             ${(tEnd - tAggZone) / 1e9}%.2fs")
-    println(f"TOTAL:            ${(tEnd - tStart) / 1e9}%.2fs")
-    println("=" * 60 + "\n")
-    
-    // Save results
     val dfResult = topZones.toDF("PULocationID", "Borough", "Zone", "avg_tip_pct", "count")
     dfResult.coalesce(1).write.mode(SaveMode.Overwrite).option("header", "true").csv(outputPath + "_optimized.csv")
     dfResult.coalesce(1).write.mode(SaveMode.Overwrite).json(outputPath + "_optimized.json")
     println(s"✅ Results saved to ${outputPath}_optimized.[csv|json]")
     
-    (tEnd - tStart) / 1e9
+    (System.nanoTime() - tStart) / 1e9
   }
 
-  /** Run both pipelines and compare */
   def runBoth(
     spark: SparkSession,
     tripsPath: String,
@@ -265,51 +243,30 @@ object Application {
       .config("spark.sql.session.timeZone", "UTC")
       .getOrCreate()
     
-    val sqlContext = spark.sqlContext
-    import sqlContext.implicits._
-
     if (args.length < 2) {
       println("Usage: Application <deploymentMode> <job>")
-      println("  deploymentMode: \"local\", \"remote\", or \"sharedRemote\"")
-      println("  job: 1 (non-optimized), 2 (optimized), or 3 (both)")
       spark.stop()
       return
     }
 
     val deploymentMode = args(0)
-    var writeMode = deploymentMode
-    if (deploymentMode == "sharedRemote") {
-      writeMode = "remote"
-    }
     val job = args(1)
+    var writeMode = if (deploymentMode == "sharedRemote") "remote" else deploymentMode
 
-    // Initialize Spark context with AWS credentials if needed
     Commons.initializeSparkContext(deploymentMode, spark)
 
-    // Get dataset paths
-    val tripsPath = if (deploymentMode == "local") 
-      Commons.getDatasetPath(deploymentMode, "trips/yellow_tripdata_2022-03.parquet")
-    else
-      Commons.getDatasetPath(deploymentMode, "trips/")
+    val tripsPath =
+      if (deploymentMode == "local")
+        Commons.getDatasetPath(deploymentMode, "trips/yellow_tripdata_2022-03.parquet")
+      else
+        Commons.getDatasetPath(deploymentMode, "trips/")
     val zonesPath = Commons.getDatasetPath(deploymentMode, "zones/taxi_zone_lookup.csv")
     val outputPath = Commons.getDatasetPath(writeMode, "output/results")
-println(s"Deployment mode: $deploymentMode")
-    println(s"Trips path: $tripsPath")
-    println(s"Zones path: $zonesPath")
-    println(s"Output path: $outputPath")
 
-    if (job == "1") {
-      runNonOptimized(spark, tripsPath, zonesPath, outputPath)
-    }
-    else if (job == "2") {
-      runOptimized(spark, tripsPath, zonesPath, outputPath)
-    }
-    else if (job == "3") {
-      runBoth(spark, tripsPath, zonesPath, outputPath)
-    }
-    else {
-      println("Wrong job number. Use 1, 2, or 3")
-    }
+    if (job == "1") runNonOptimized(spark, tripsPath, zonesPath, outputPath)
+    else if (job == "2") runOptimized(spark, tripsPath, zonesPath, outputPath)
+    else if (job == "3") runBoth(spark, tripsPath, zonesPath, outputPath)
+    else println("Wrong job number. Use 1, 2, or 3")
 
     spark.stop()
   }
