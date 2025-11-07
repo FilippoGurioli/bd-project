@@ -271,7 +271,9 @@ object Application {
         )
     }
 
-    println("----------------FINISH LOADING DATA ---------------------------")
+    println("\n" + "=" * 60)
+    println("FINISH LOADING DATA")
+    println("=" * 60 + "\n")
     if (job == "1") runNonOptimized(spark, rddTrips, rddZones, outputPath)
     else if (job == "2") runOptimized(spark, rddTrips, rddZones, outputPath)
     else if (job == "3") runBoth(spark, rddTrips, rddZones, outputPath)
