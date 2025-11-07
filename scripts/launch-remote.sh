@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CLUSTER_ID=$(aws emr list-clusters | jq ".Clusters[0].Id")
+CLUSTER_ID=$(aws emr list-clusters | jq -r ".Clusters[0].Id")
 
 aws emr ssh \
   --cluster-id $CLUSTER_ID \
