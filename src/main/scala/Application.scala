@@ -225,8 +225,8 @@ object Application {
 
     // Initialize Input
     val rddTrips: RDD[(Long, (Any, Double, Double))] = spark.read
-      .option("mergeSchema", "true")
       .parquet(tripsPath)
+      .drop("congestion_surcharge", "airport_fee")
       .select(
         col("PULocationID"),
         col("tpep_pickup_datetime"),
