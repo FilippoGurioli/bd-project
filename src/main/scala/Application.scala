@@ -255,7 +255,7 @@ object Application {
 
     // Union all RDDs
     val rddTrips = if (individualRdds.length > 1) {
-      spark.sparkContext.union(individualRdds)
+      spark.sparkContext.union(individualRdds).filter { case (id, _) => id >= 0 }
     } else {
       individualRdds.head
     }
@@ -271,6 +271,7 @@ object Application {
         )
     }
 
+    println("----------------FINISH LOADING DATA ---------------------------")
     if (job == "1") runNonOptimized(spark, rddTrips, rddZones, outputPath)
     else if (job == "2") runOptimized(spark, rddTrips, rddZones, outputPath)
     else if (job == "3") runBoth(spark, rddTrips, rddZones, outputPath)
