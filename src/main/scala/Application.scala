@@ -59,16 +59,9 @@ object Application {
     
     val tStart = System.nanoTime()
 
-    val customSchema = StructType(Seq(
-      StructField("PULocationID", StringType, true),
-      StructField("tpep_pickup_datetime", StringType, true),
-      StructField("fare_amount", DoubleType, true),
-      StructField("tip_amount", DoubleType, true),
-    ))
-    
     // Load trips
     val dfTrips = spark.read
-      .schema(customSchema)
+      .option("mergeSchema", "true")
       .parquet(tripsPath)
       .drop("congestion_surcharge", "airport_fee")
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
@@ -159,16 +152,9 @@ object Application {
     val sc = spark.sparkContext
     val tStart = System.nanoTime()
     
-    val customSchema = StructType(Seq(
-      StructField("PULocationID", StringType, true),
-      StructField("tpep_pickup_datetime", StringType, true),
-      StructField("fare_amount", DoubleType, true),
-      StructField("tip_amount", DoubleType, true),
-    ))
-
     // Load trips
     val dfTrips = spark.read
-      .schema(customSchema)
+      .option("mergeSchema", "true")
       .parquet(tripsPath)
       .drop("congestion_surcharge", "airport_fee")
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")

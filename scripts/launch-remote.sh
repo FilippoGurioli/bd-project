@@ -5,6 +5,8 @@ if [ $# -eq 0 ]; then
   exit
 fi
 
+CLUSTER_ID=aws emr list-clusters | jq
+
 aws emr ssh \
   --cluster-id $1 \
   --key-pair-file keys/31-10-fgurioli.pem \
