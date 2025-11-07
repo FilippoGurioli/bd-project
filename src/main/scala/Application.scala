@@ -46,8 +46,8 @@ object Application {
   /** Non-optimized pipeline using groupByKey (multiple shuffles) */
   def runNonOptimized(
     spark: SparkSession,
-    tripsPath: String,
-    zonesPath: String,
+    rddTrips: RDD[(Long, (Any, Double, Double))],
+    rddZones: RDD[(Long, (String, String))],
     outputPath: String
   ): Double = {
     
@@ -60,35 +60,6 @@ object Application {
     
     val tStart = System.nanoTime()
 
-    // Load trips
-    val dfTrips = spark.read
-      .option("mergeSchema", "true")
-      .parquet(tripsPath)
-      .drop("congestion_surcharge", "airport_fee")
-      .select(
-        col("PULocationID").cast(LongType).as("PULocationID"),
-        col("tpep_pickup_datetime"),
-        col("fare_amount"),
-        col("tip_amount")
-      )
-    
-    // Always treat PULocationID as Long
-    val rddTrips: RDD[(Long, (Any, Double, Double))] = dfTrips.rdd.map { r =>
-      val id = safeLong(r.get(0))
-      val ts = r.get(1)
-      val fare = if (r.isNullAt(2)) 0.0 else r.getDouble(2)
-      val tip = if (r.isNullAt(3)) 0.0 else r.getDouble(3)
-      (id, (ts, fare, tip))
-    }
-    
-    // Load zones and convert LocationID to Long as well
-    val dfZones = spark.read.option("header", "true").csv(zonesPath)
-    val rddZones: RDD[(Long, (String, String))] = dfZones.rdd.map { r =>
-      (safeLong(r.getAs[String]("LocationID")), (r.getAs[String]("Borough"), r.getAs[String]("Zone")))
-    }
-    
-    val tLoad = System.nanoTime()
-    
     // Join (both sides Long → safe)
     val rddJoined = rddTrips.join(rddZones)
     
@@ -143,8 +114,8 @@ object Application {
   /** Optimized pipeline using broadcast + reduceByKey + partitioning */
   def runOptimized(
     spark: SparkSession,
-    tripsPath: String,
-    zonesPath: String,
+    rddTrips: RDD[(Long, (Any, Double, Double))],
+    rddZones: RDD[(Long, (String, String))],
     outputPath: String
   ): Double = {
     
@@ -158,35 +129,8 @@ object Application {
     val sc = spark.sparkContext
     val tStart = System.nanoTime()
     
-    // Load trips
-    val dfTrips = spark.read
-      .option("mergeSchema", "true")
-      .parquet(tripsPath)
-      .drop("congestion_surcharge", "airport_fee")
-      .select(
-        col("PULocationID").cast(LongType).as("PULocationID"),
-        col("tpep_pickup_datetime"),
-        col("fare_amount"),
-        col("tip_amount")
-      )
-    
-    val rddTrips: RDD[(Long, (Any, Double, Double))] = dfTrips.rdd.map { r =>
-      val id = safeLong(r.get(0))
-      val ts = r.get(1)
-      val fare = if (r.isNullAt(2)) 0.0 else r.getDouble(2)
-      val tip = if (r.isNullAt(3)) 0.0 else r.getDouble(3)
-      (id, (ts, fare, tip))
-    }
-    
-    // Load and broadcast zones
-    val dfZones = spark.read.option("header", "true").csv(zonesPath)
-    val zonesMap = dfZones.rdd
-      .map(r => (safeLong(r.getAs[String]("LocationID")), (r.getAs[String]("Borough"), r.getAs[String]("Zone"))))
-      .collect()
-      .toMap
+    val zonesMap = rddZones.collect().toMap
     val bZones: Broadcast[Map[Long, (String, String)]] = sc.broadcast(zonesMap)
-    
-    val tLoad = System.nanoTime()
     
     // Enrich + reduceByKey
     val enrichAndAggregate = rddTrips.map { case (puId, (ts, fare, tip)) =>
@@ -207,7 +151,7 @@ object Application {
     val rddPartitioned = rddZoneHourAvg.partitionBy(new HashPartitioner(8))
       .persist(StorageLevel.MEMORY_AND_DISK)
     
-    rddPartitioned.count() // Force cache
+    rddPartitioned.count()
     
     val rddZoneAgg = rddPartitioned
       .map { case (key, avgTip) => (key, (avgTip, 1)) }
@@ -229,16 +173,16 @@ object Application {
 
   def runBoth(
     spark: SparkSession,
-    tripsPath: String,
-    zonesPath: String,
+    rddTrips: RDD[(Long, (Any, Double, Double))],
+    rddZones: RDD[(Long, (String, String))],
     outputPath: String
   ): Unit = {
     println("\n" + "=" * 60)
     println("RUNNING BOTH PIPELINES (Job 3)")
     println("=" * 60 + "\n")
     
-    val timeNonOpt = runNonOptimized(spark, tripsPath, zonesPath, outputPath)
-    val timeOpt = runOptimized(spark, tripsPath, zonesPath, outputPath)
+    val timeNonOpt = runNonOptimized(spark, rddTrips, rddZones, outputPath)
+    val timeOpt = runOptimized(spark, rddTrips, rddZones, outputPath)
     
     val speedup = timeNonOpt / timeOpt
     val saved = timeNonOpt - timeOpt
@@ -279,9 +223,37 @@ object Application {
     val zonesPath = Commons.getDatasetPath(deploymentMode, "zones/taxi_zone_lookup.csv")
     val outputPath = Commons.getDatasetPath(writeMode, "output/results")
 
-    if (job == "1") runNonOptimized(spark, tripsPath, zonesPath, outputPath)
-    else if (job == "2") runOptimized(spark, tripsPath, zonesPath, outputPath)
-    else if (job == "3") runBoth(spark, tripsPath, zonesPath, outputPath)
+    // Initialize Input
+    val rddTrips: RDD[(Long, (Any, Double, Double))] = spark.read
+      .option("mergeSchema", "true")
+      .parquet(tripsPath)
+      .select(
+        col("PULocationID"),
+        col("tpep_pickup_datetime"),
+        col("fare_amount"),
+        col("tip_amount")
+      ).rdd.map { r => 
+      val id = safeLong(r.get(0))
+      val ts = r.get(1)
+      val fare = if (r.isNullAt(2)) 0.0 else r.getDouble(2)
+      val tip = if (r.isNullAt(3)) 0.0 else r.getDouble(3)
+      (id, (ts, fare, tip))
+    }
+
+    val rddZones: RDD[(Long, (String, String))] = spark
+      .read
+      .option("header", "true")
+      .csv(zonesPath).rdd
+      .map { r =>
+        (
+          safeLong(r.getAs[String]("LocationID")), 
+          (r.getAs[String]("Borough"), r.getAs[String]("Zone"))
+        )
+    }
+
+    if (job == "1") runNonOptimized(spark, rddTrips, rddZones, outputPath)
+    else if (job == "2") runOptimized(spark, rddTrips, rddZones, outputPath)
+    else if (job == "3") runBoth(spark, rddTrips, rddZones, outputPath)
     else println("Wrong job number. Use 1, 2, or 3")
 
     spark.stop()
