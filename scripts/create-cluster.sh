@@ -13,4 +13,4 @@ aws emr create-cluster \
   --region "us-east-1" \
   --log-uri s3://unibo-31-10-fgurioli/logs/
 
-watch -n 20 "aws emr list-clusters | jq'.Clusters[0].Status.State'"
+watch -n 20 "aws emr list-clusters | jq '.Clusters[0].Status.State'"
