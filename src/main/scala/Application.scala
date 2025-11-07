@@ -62,6 +62,7 @@ object Application {
 
     // Load trips
     val dfTrips = spark.read
+      .option("mergeSchema", "true")
       .parquet(tripsPath)
       .drop("congestion_surcharge", "airport_fee")
       .select(
