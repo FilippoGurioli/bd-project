@@ -2,7 +2,7 @@
 
 if [ $# -eq 0 ]; then
   echo "Pass cluster id as first parameter"
-  return 0
+  exit
 fi
 
 aws emr ssh \
