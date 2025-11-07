@@ -67,8 +67,9 @@ object Application {
     ))
     
     // Load trips
-    val dfTrips = spark.read.parquet(tripsPath)
+    val dfTrips = spark.read
       .schema(customSchema)
+      .parquet(tripsPath)
       .drop("congestion_surcharge", "airport_fee")
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
     
@@ -166,8 +167,9 @@ object Application {
     ))
 
     // Load trips
-    val dfTrips = spark.read.parquet(tripsPath)
+    val dfTrips = spark.read
       .schema(customSchema)
+      .parquet(tripsPath)
       .drop("congestion_surcharge", "airport_fee")
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
     
