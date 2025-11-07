@@ -22,6 +22,13 @@ object Application {
     }
   }
 
+  // def safeLong(value: Any): Long = value match {
+  //   case i: Int => i.toLong
+  //   case l: Long => l
+  //   case s: String => s.toLongOption.getOrElse(-1)
+  //   case _ => -1
+  // }
+
   /** Compute tip percentage safely */
   def tipPct(fare: Double, tip: Double): Double = {
     if (fare > 0) (tip / fare) * 100.0 else 0.0
@@ -49,8 +56,8 @@ object Application {
       .drop("congestion_surcharge", "airport_fee")
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
     
-    val rddTrips: RDD[(Int, (Any, Double, Double))] = dfTrips.rdd.map { r =>
-      val id = if (r.isNullAt(0)) -1 else r.getInt(0)
+    val rddTrips: RDD[(Long, (Any, Double, Double))] = dfTrips.rdd.map { r =>
+      val id = if (r.isNullAt(0)) -1 else r.getLong(0)
       val ts = r.get(1)
       val fare = if (r.isNullAt(2)) 0.0 else r.getDouble(2)
       val tip = if (r.isNullAt(3)) 0.0 else r.getDouble(3)
@@ -59,8 +66,8 @@ object Application {
     
     // Load zones
     val dfZones = spark.read.option("header", "true").csv(zonesPath)
-    val rddZones: RDD[(Int, (String, String))] = dfZones.rdd.map { r =>
-      (r.getAs[String]("LocationID").toInt, (r.getAs[String]("Borough"), r.getAs[String]("Zone")))
+    val rddZones: RDD[(Long, (String, String))] = dfZones.rdd.map { r =>
+      (r.getAs[String]("LocationID").toLong, (r.getAs[String]("Borough"), r.getAs[String]("Zone")))
     }
     
     val tLoad = System.nanoTime()
@@ -146,8 +153,8 @@ object Application {
       .drop("congestion_surcharge", "airport_fee")
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
     
-    val rddTrips: RDD[(Int, (Any, Double, Double))] = dfTrips.rdd.map { r =>
-      val id = if (r.isNullAt(0)) -1 else r.getInt(0)
+    val rddTrips: RDD[(Long, (Any, Double, Double))] = dfTrips.rdd.map { r =>
+      val id = if (r.isNullAt(0)) -1 else r.getLong(0)
       val ts = r.get(1)
       val fare = if (r.isNullAt(2)) 0.0 else r.getDouble(2)
       val tip = if (r.isNullAt(3)) 0.0 else r.getDouble(3)
@@ -157,10 +164,10 @@ object Application {
     // Load and broadcast zones (no shuffle join!)
     val dfZones = spark.read.option("header", "true").csv(zonesPath)
     val zonesMap = dfZones.rdd
-      .map(r => (r.getAs[String]("LocationID").toInt, (r.getAs[String]("Borough"), r.getAs[String]("Zone"))))
+      .map(r => (r.getAs[String]("LocationID").toLong, (r.getAs[String]("Borough"), r.getAs[String]("Zone"))))
       .collect()
       .toMap
-    val bZones: Broadcast[Map[Int, (String, String)]] = sc.broadcast(zonesMap)
+    val bZones: Broadcast[Map[Long, (String, String)]] = sc.broadcast(zonesMap)
     
     val tLoad = System.nanoTime()
     
