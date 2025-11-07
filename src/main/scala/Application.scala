@@ -1,6 +1,7 @@
 package project
 
 import org.apache.spark.sql.{SparkSession, SaveMode}
+import org.apache.spark.sql.types._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.HashPartitioner
@@ -57,9 +58,17 @@ object Application {
     import sqlContext.implicits._
     
     val tStart = System.nanoTime()
+
+    val customSchema = StructType(Seq(
+      StructField("PULocationID", StringType, true),
+      StructField("tpep_pickup_datetime", StringType, true),
+      StructField("fare_amount", DoubleType, true),
+      StructField("tip_amount", DoubleType, true),
+    ))
     
     // Load trips
     val dfTrips = spark.read.parquet(tripsPath)
+      .schema(customSchema)
       .drop("congestion_surcharge", "airport_fee")
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
     
@@ -149,8 +158,16 @@ object Application {
     val sc = spark.sparkContext
     val tStart = System.nanoTime()
     
+    val customSchema = StructType(Seq(
+      StructField("PULocationID", StringType, true),
+      StructField("tpep_pickup_datetime", StringType, true),
+      StructField("fare_amount", DoubleType, true),
+      StructField("tip_amount", DoubleType, true),
+    ))
+
     // Load trips
     val dfTrips = spark.read.parquet(tripsPath)
+      .schema(customSchema)
       .drop("congestion_surcharge", "airport_fee")
       .select("PULocationID", "tpep_pickup_datetime", "fare_amount", "tip_amount")
     
