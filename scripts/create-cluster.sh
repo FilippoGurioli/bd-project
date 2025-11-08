@@ -10,7 +10,6 @@ aws emr create-cluster \
   --instance-groups InstanceGroupType=MASTER,InstanceCount=1,InstanceType=m5.xlarge InstanceGroupType=CORE,InstanceCount=2,InstanceType=m5.xlarge \
   --service-role EMR_DefaultRole \
   --ec2-attributes InstanceProfile=EMR_EC2_DefaultRole,KeyName=31-10-fgurioli \
-  --region "us-east-1" \
-  --log-uri s3://unibo-31-10-fgurioli/logs/
+  --region "us-east-1"
 
 watch -n 20 "aws emr list-clusters | jq '.Clusters[0].Status.State'"
