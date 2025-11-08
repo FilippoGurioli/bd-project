@@ -50,64 +50,71 @@ object Application {
     rddZones: RDD[(Long, (String, String))],
     outputPath: String
   ): Double = {
-    
+  
     println("\n" + "=" * 60)
     println("RUNNING NON-OPTIMIZED PIPELINE (Job 1)")
     println("=" * 60)
-    
+  
     val sqlContext = spark.sqlContext
     import sqlContext.implicits._
-    
+  
     val tStart = System.nanoTime()
 
     // Join (both sides Long → safe)
     val rddJoined = rddTrips.join(rddZones)
-    
+  
     // Compute tip percentage and hour
     val rddDerived = rddJoined.map { case (puId, ((ts, fare, tip), (borough, zone))) =>
       val hour = safeHour(ts)
       val pct = tipPct(fare, tip)
       (puId, borough, zone, hour, fare, tip, pct)
     }
-    
+  
     val tDerived = System.nanoTime()
-    
-    // Aggregate by (zone, hour)
+  
+    // Aggregate by (zone, hour) - ADD PARTITIONS
     val rddZoneHour = rddDerived.map(x => ((x._1, x._2, x._3, x._4), x._7))
-    val rddGrouped = rddZoneHour.groupByKey()
+    val rddGrouped = rddZoneHour.groupByKey(numPartitions = 200)  // ← ADD THIS
     val rddAggHour = rddGrouped.map { case ((puId, borough, zone, hour), tips) =>
       val tipsList = tips.toList
       (puId, borough, zone, hour, tipsList.sum / tipsList.length, tipsList.length)
     }
-    
+  
     val tAggHour = System.nanoTime()
-    
-    // Aggregate across hours
+  
+    // Aggregate across hours - ADD PARTITIONS
     val rddZoneTmp = rddAggHour.map(x => ((x._1, x._2, x._3), (x._5, x._6)))
-    val rddGroupedZone = rddZoneTmp.groupByKey()
+    val rddGroupedZone = rddZoneTmp.groupByKey(numPartitions = 100)  // ← ADD THIS
     val rddAggZone = rddGroupedZone.map { case ((puId, borough, zone), vals) =>
       val valsList = vals.toList
       val avgTip = valsList.map(_._1).sum / valsList.length
       val totalCount = valsList.map(_._2).sum
       (puId, borough, zone, avgTip, totalCount)
     }
-    
+  
     val tAggZone = System.nanoTime()
-    
-    // Sort
-    val rddTop = rddAggZone.sortBy(_._4, ascending = false)
-    val topZones = rddTop.take(20).toList
-    
+  
+    // Persist before sorting
+    val rddToPersist = rddAggZone.persist(StorageLevel.MEMORY_AND_DISK)
+    rddToPersist.count()
+  
+    // Use takeOrdered instead of full sort
+    val topZones = rddToPersist.takeOrdered(20)(
+      Ordering.by[(Long, String, String, Double, Long), Double](_._4).reverse
+    ).toList
+  
+    rddToPersist.unpersist()
+  
     val tEnd = System.nanoTime()
-    
+  
     // Print timing
     println(f"TOTAL: ${(tEnd - tStart) / 1e9}%.2fs")
-    
+  
     val dfResult = topZones.toDF("PULocationID", "Borough", "Zone", "avg_tip_pct", "count")
     dfResult.coalesce(1).write.mode(SaveMode.Overwrite).option("header", "true").csv(outputPath + "_non_optimized.csv")
     dfResult.coalesce(1).write.mode(SaveMode.Overwrite).json(outputPath + "_non_optimized.json")
     println(s"✅ Results saved to ${outputPath}_non_optimized.[csv|json]")
-    
+  
     (tEnd - tStart) / 1e9
   }
 
