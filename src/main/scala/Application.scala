@@ -99,9 +99,7 @@ object Application {
     rddToPersist.count()
   
     // Use takeOrdered instead of full sort
-    val topZones = rddToPersist.takeOrdered(20)(
-      Ordering.by[(Long, String, String, Double, Long), Double](_._4).reverse
-    ).toList
+    val topZones = rddToPersist.top(20)(Ordering.by(_._4)).toList
   
     rddToPersist.unpersist()
   
