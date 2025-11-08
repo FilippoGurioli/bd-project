@@ -59,9 +59,10 @@ object Application {
     import sqlContext.implicits._
   
     val tStart = System.nanoTime()
-
+  
     // Join (both sides Long → safe)
-    val rddJoined = rddTrips.join(rddZones)
+    // CRITICAL: Repartition AFTER join to spread data across more partitions
+    val rddJoined = rddTrips.join(rddZones).repartition(400)
   
     // Compute tip percentage and hour
     val rddDerived = rddJoined.map { case (puId, ((ts, fare, tip), (borough, zone))) =>
@@ -72,9 +73,9 @@ object Application {
   
     val tDerived = System.nanoTime()
   
-    // Aggregate by (zone, hour) - ADD PARTITIONS
+    // Aggregate by (zone, hour) - Increase partitions significantly
     val rddZoneHour = rddDerived.map(x => ((x._1, x._2, x._3, x._4), x._7))
-    val rddGrouped = rddZoneHour.groupByKey(numPartitions = 200)  // ← ADD THIS
+    val rddGrouped = rddZoneHour.groupByKey(numPartitions = 400)
     val rddAggHour = rddGrouped.map { case ((puId, borough, zone, hour), tips) =>
       val tipsList = tips.toList
       (puId, borough, zone, hour, tipsList.sum / tipsList.length, tipsList.length)
@@ -82,9 +83,9 @@ object Application {
   
     val tAggHour = System.nanoTime()
   
-    // Aggregate across hours - ADD PARTITIONS
+    // Aggregate across hours - Fewer partitions since data is smaller now
     val rddZoneTmp = rddAggHour.map(x => ((x._1, x._2, x._3), (x._5, x._6)))
-    val rddGroupedZone = rddZoneTmp.groupByKey(numPartitions = 100)  // ← ADD THIS
+    val rddGroupedZone = rddZoneTmp.groupByKey(numPartitions = 200)
     val rddAggZone = rddGroupedZone.map { case ((puId, borough, zone), vals) =>
       val valsList = vals.toList
       val avgTip = valsList.map(_._1).sum / valsList.length
@@ -94,11 +95,14 @@ object Application {
   
     val tAggZone = System.nanoTime()
   
-    // Persist before sorting
-    val rddToPersist = rddAggZone.persist(StorageLevel.MEMORY_AND_DISK)
+    // Coalesce to fewer partitions before collecting top results
+    val rddCoalesced = rddAggZone.coalesce(50)
+    
+    // Persist the coalesced RDD
+    val rddToPersist = rddCoalesced.persist(StorageLevel.MEMORY_AND_DISK)
     rddToPersist.count()
   
-    // Use takeOrdered instead of full sort
+    // Use top instead of full sort
     val topZones = rddToPersist.top(20)(Ordering.by(_._4)).toList
   
     rddToPersist.unpersist()
