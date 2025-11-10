@@ -13,7 +13,7 @@ aws emr create-cluster \
   --conf spark.executor.memory=6G \
   --conf spark.executor.memoryOverhead=2G \
   --conf spark.sql.shuffle.partitions=64 \
-  --conf spark.default.parallelism=24
---region "us-east-1"
+  --conf spark.default.parallelism=24 \
+  --region "us-east-1"
 
 watch -n 20 "aws emr list-clusters | jq '.Clusters[0].Status.State'"
