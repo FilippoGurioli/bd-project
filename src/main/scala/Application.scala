@@ -44,6 +44,7 @@ object Application {
   }
 
   /** Non-optimized pipeline using groupByKey (multiple shuffles) */
+  /** Non-optimized pipeline using standard join + reduceByKey */
   def runNonOptimized(
     spark: SparkSession,
     rddTrips: RDD[(Long, (Any, Double, Double))],
@@ -52,51 +53,61 @@ object Application {
   ): Double = {
   
     println("\n" + "=" * 60)
-    println("RUNNING NON-OPTIMIZED PIPELINE (Job 1 - improved)")
+    println("RUNNING NON-OPTIMIZED PIPELINE (FIXED reduceByKey)")
     println("=" * 60)
   
     val sqlContext = spark.sqlContext
     import sqlContext.implicits._
     val tStart = System.nanoTime()
   
+    // Regular join (causes shuffle)
     val rddJoined = rddTrips.join(rddZones)
+    // (puId, ((ts, fare, tip), (borough, zone)))
   
+    // Compute tip %, hour, and build key for aggregation
     val rddDerived = rddJoined.map { case (puId, ((ts, fare, tip), (borough, zone))) =>
       val hour = safeHour(ts)
       val pct = tipPct(fare, tip)
       ((puId, borough, zone, hour), (pct, 1))
     }
   
+    // 1️⃣ Aggregate per-hour tip % (sum, count)
     val rddHourAgg = rddDerived
-      .groupByKey() // intentionally “non optimized” (1 shuffle)
-      .mapValues { vals =>
-        val list = vals.toList
-        val (sum, count) = list.foldLeft((0.0, 0)) { case ((s, c), (v, n)) => (s + v, c + n) }
-        (sum / count, count)
+      .reduceByKey { case ((sum1, cnt1), (sum2, cnt2)) =>
+        (sum1 + sum2, cnt1 + cnt2)
+      }
+      .mapValues { case (sum, count) =>
+        (sum / count, count) // store (avgTipPctPerHour, count)
       }
   
+    // 2️⃣ Aggregate per-zone by combining per-hour results (weighted)
     val rddZoneAgg = rddHourAgg
-      .map { case ((puId, borough, zone, _), (avg, count)) =>
-        ((puId, borough, zone), (avg, count))
+      .map { case ((puId, borough, zone, _hour), (avgHour, countHour)) =>
+        // convert back to weighted sums for correct averaging
+        ((puId, borough, zone), (avgHour * countHour, countHour))
       }
-      .groupByKey() // intentionally another shuffle
-      .mapValues { vals =>
-        val list = vals.toList
-        val (sum, count) = list.foldLeft((0.0, 0)) { case ((s, c), (v, n)) => (s + v, c + n) }
-        (sum / count, count)
+      .reduceByKey { case ((sum1, cnt1), (sum2, cnt2)) =>
+        (sum1 + sum2, cnt1 + cnt2)
+      }
+      .map { case ((puId, borough, zone), (sumWeighted, totalCount)) =>
+        (puId, borough, zone, sumWeighted / totalCount, totalCount)
       }
   
+    // 3️⃣ Get top 20 zones by average tip %
     val topZones = rddZoneAgg
-      .map { case ((puId, borough, zone), (avg, count)) =>
-        (puId, borough, zone, avg, count)
-      }
       .sortBy(_._4, ascending = false)
       .take(20)
       .toList
   
+    // 4️⃣ Write output to CSV and JSON
     val dfResult = topZones.toDF("PULocationID", "Borough", "Zone", "avg_tip_pct", "count")
-    dfResult.coalesce(1).write.mode(SaveMode.Overwrite).option("header", "true").csv(outputPath + "_non_optimized.csv")
-    dfResult.coalesce(1).write.mode(SaveMode.Overwrite).json(outputPath + "_non_optimized.json")
+    dfResult.coalesce(1)
+      .write.mode(SaveMode.Overwrite)
+      .option("header", "true")
+      .csv(outputPath + "_non_optimized.csv")
+    dfResult.coalesce(1)
+      .write.mode(SaveMode.Overwrite)
+      .json(outputPath + "_non_optimized.json")
   
     println(s"✅ Results saved to ${outputPath}_non_optimized.[csv|json]")
   
