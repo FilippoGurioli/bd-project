@@ -7,9 +7,13 @@ aws emr create-cluster \
   --name "Cluster $NEW_NUMBER" \
   --release-label "emr-7.3.0" \
   --applications Name=Hadoop Name=Spark \
-  --instance-groups InstanceGroupType=MASTER,InstanceCount=1,InstanceType=m5.xlarge InstanceGroupType=CORE,InstanceCount=2,InstanceType=m5.xlarge \
+  --instance-groups InstanceGroupType=MASTER,InstanceCount=1,InstanceType=m5.xlarge InstanceGroupType=CORE,InstanceCount=3,InstanceType=m5.xlarge \
   --service-role EMR_DefaultRole \
   --ec2-attributes InstanceProfile=EMR_EC2_DefaultRole,KeyName=31-10-fgurioli \
-  --region "us-east-1"
+  --conf spark.executor.memory=6G \
+  --conf spark.executor.memoryOverhead=2G \
+  --conf spark.sql.shuffle.partitions=64 \
+  --conf spark.default.parallelism=24
+--region "us-east-1"
 
 watch -n 20 "aws emr list-clusters | jq '.Clusters[0].Status.State'"

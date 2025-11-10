@@ -43,8 +43,7 @@ object Application {
     if (fare > 0) (tip / fare) * 100.0 else 0.0
   }
 
-  /** Non-optimized pipeline using groupByKey (multiple shuffles) */
-  /** Non-optimized pipeline using standard join + reduceByKey */
+  /**Non optimized job*/
   def runNonOptimized(
     spark: SparkSession,
     rddTrips: RDD[(Long, (Any, Double, Double))],
@@ -53,37 +52,31 @@ object Application {
   ): Double = {
   
     println("\n" + "=" * 60)
-    println("RUNNING NON-OPTIMIZED PIPELINE (FIXED reduceByKey)")
+    println("RUNNING NON-OPTIMIZED PIPELINE")
     println("=" * 60)
   
     val sqlContext = spark.sqlContext
     import sqlContext.implicits._
     val tStart = System.nanoTime()
   
-    // Regular join (causes shuffle)
     val rddJoined = rddTrips.join(rddZones)
-    // (puId, ((ts, fare, tip), (borough, zone)))
   
-    // Compute tip %, hour, and build key for aggregation
     val rddDerived = rddJoined.map { case (puId, ((ts, fare, tip), (borough, zone))) =>
       val hour = safeHour(ts)
       val pct = tipPct(fare, tip)
       ((puId, borough, zone, hour), (pct, 1))
     }
   
-    // 1️⃣ Aggregate per-hour tip % (sum, count)
     val rddHourAgg = rddDerived
       .reduceByKey { case ((sum1, cnt1), (sum2, cnt2)) =>
         (sum1 + sum2, cnt1 + cnt2)
       }
       .mapValues { case (sum, count) =>
-        (sum / count, count) // store (avgTipPctPerHour, count)
+        (sum / count, count)
       }
   
-    // 2️⃣ Aggregate per-zone by combining per-hour results (weighted)
     val rddZoneAgg = rddHourAgg
       .map { case ((puId, borough, zone, _hour), (avgHour, countHour)) =>
-        // convert back to weighted sums for correct averaging
         ((puId, borough, zone), (avgHour * countHour, countHour))
       }
       .reduceByKey { case ((sum1, cnt1), (sum2, cnt2)) =>
@@ -93,13 +86,11 @@ object Application {
         (puId, borough, zone, sumWeighted / totalCount, totalCount)
       }
   
-    // 3️⃣ Get top 20 zones by average tip %
     val topZones = rddZoneAgg
       .sortBy(_._4, ascending = false)
       .take(20)
       .toList
   
-    // 4️⃣ Write output to CSV and JSON
     val dfResult = topZones.toDF("PULocationID", "Borough", "Zone", "avg_tip_pct", "count")
     dfResult.coalesce(1)
       .write.mode(SaveMode.Overwrite)
@@ -117,7 +108,7 @@ object Application {
     (tEnd - tStart) / 1e9
   }
 
-  /** Optimized pipeline using broadcast + reduceByKey + partitioning */
+  /** Optimized pipeline*/
   def runOptimized(
     spark: SparkSession,
     rddTrips: RDD[(Long, (Any, Double, Double))],
@@ -138,7 +129,6 @@ object Application {
     val zonesMap = rddZones.collect().toMap
     val bZones: Broadcast[Map[Long, (String, String)]] = sc.broadcast(zonesMap)
     
-    // Enrich + reduceByKey
     val enrichAndAggregate = rddTrips.map { case (puId, (ts, fare, tip)) =>
       val hour = safeHour(ts)
       val pct = tipPct(fare, tip)
@@ -231,13 +221,11 @@ object Application {
     val sqlContext = spark.sqlContext
     import sqlContext.implicits._
   
-    // Get list of all parquet files
     val df = spark.read.parquet(tripsPath)
-    val files = df.inputFiles  // This gets all the actual file paths
+    val files = df.inputFiles
 
     println(s"Found ${files.length} parquet files")
 
-    // Process each file
     val individualRdds = files.map { filePath =>
       println(s"Processing: $filePath")
   
@@ -259,7 +247,6 @@ object Application {
         }
     }
 
-    // Union all RDDs
     val rddTrips = if (individualRdds.length > 1) {
       spark.sparkContext.union(individualRdds).filter { case (id, _) => id >= 0 }
     } else {
