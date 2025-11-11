@@ -44,7 +44,7 @@ object Application {
   }
 
   /**Non optimized job*/
-  def runSafeNonOptimized(
+  def runNonOptimized(
       spark: SparkSession,
       rddTrips: RDD[(Long, (Any, Double, Double))],
       rddZones: RDD[(Long, (String, String))],
