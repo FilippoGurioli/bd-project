@@ -44,11 +44,11 @@ object Application {
   }
 
   /**Non optimized job*/
-  def runNonOptimized(
-    spark: SparkSession,
-    rddTrips: RDD[(Long, (Any, Double, Double))],
-    rddZones: RDD[(Long, (String, String))],
-    outputPath: String
+  def runSafeNonOptimized(
+      spark: SparkSession,
+      rddTrips: RDD[(Long, (Any, Double, Double))],
+      rddZones: RDD[(Long, (String, String))],
+      outputPath: String
   ): Double = {
   
     println("\n" + "=" * 60)
@@ -59,52 +59,39 @@ object Application {
     import sqlContext.implicits._
     val tStart = System.nanoTime()
   
-    val rddJoined = rddTrips.join(rddZones)
+    val zonesList = rddZones.collect().toList
+    val rddZonesChunks = spark.sparkContext.parallelize(zonesList, numSlices = 2)
   
-    val rddDerived = rddJoined.map { case (puId, ((ts, fare, tip), (borough, zone))) =>
-      val hour = safeHour(ts)
-      val pct = tipPct(fare, tip)
-      ((puId, borough, zone, hour), (pct, 1))
+    val rddJoined = rddTrips.mapPartitions { iter =>
+      val zonesMap = zonesList.toMap
+      iter.map { case (puId, (ts, fare, tip)) =>
+        val (borough, zone) = zonesMap.getOrElse(puId, ("Unknown", "Unknown"))
+        ((puId, borough, zone, safeHour(ts)), (tipPct(fare, tip), 1))
+      }
     }
   
-    val rddHourAgg = rddDerived
-      .reduceByKey { case ((sum1, cnt1), (sum2, cnt2)) =>
-        (sum1 + sum2, cnt1 + cnt2)
-      }
-      .mapValues { case (sum, count) =>
-        (sum / count, count)
-      }
+    val rddHourAgg = rddJoined.reduceByKey { case ((sum1, cnt1), (sum2, cnt2)) =>
+      (sum1 + sum2, cnt1 + cnt2)
+    }.mapValues { case (sum, count) => (sum / count, count) }
   
-    val rddZoneAgg = rddHourAgg
-      .map { case ((puId, borough, zone, _hour), (avgHour, countHour)) =>
-        ((puId, borough, zone), (avgHour * countHour, countHour))
-      }
-      .reduceByKey { case ((sum1, cnt1), (sum2, cnt2)) =>
-        (sum1 + sum2, cnt1 + cnt2)
-      }
-      .map { case ((puId, borough, zone), (sumWeighted, totalCount)) =>
-        (puId, borough, zone, sumWeighted / totalCount, totalCount)
-      }
+    val rddZoneAgg = rddHourAgg.map { case ((puId, borough, zone, _), (avg, count)) =>
+      ((puId, borough, zone), (avg * count, count))
+    }.reduceByKey { case ((sum1, cnt1), (sum2, cnt2)) =>
+      (sum1 + sum2, cnt1 + cnt2)
+    }.map { case ((puId, borough, zone), (sumWeighted, totalCount)) =>
+      (puId, borough, zone, sumWeighted / totalCount, totalCount)
+    }
   
-    val topZones = rddZoneAgg
-      .sortBy(_._4, ascending = false)
-      .take(20)
-      .toList
+    val topZones = rddZoneAgg.sortBy(_._4, ascending = false).take(20).toList
   
     val dfResult = topZones.toDF("PULocationID", "Borough", "Zone", "avg_tip_pct", "count")
-    dfResult.coalesce(1)
-      .write.mode(SaveMode.Overwrite)
-      .option("header", "true")
-      .csv(outputPath + "_non_optimized.csv")
-    dfResult.coalesce(1)
-      .write.mode(SaveMode.Overwrite)
-      .json(outputPath + "_non_optimized.json")
+    dfResult.coalesce(1).write.mode(SaveMode.Overwrite).option("header", "true").csv(outputPath + "_safe_non_optimized.csv")
+    dfResult.coalesce(1).write.mode(SaveMode.Overwrite).json(outputPath + "_safe_non_optimized.json")
   
-    println(s"✅ Results saved to ${outputPath}_non_optimized.[csv|json]")
+    println(s"✅ Results saved to ${outputPath}_safe_non_optimized.[csv|json]")
   
     val tEnd = System.nanoTime()
     println(f"TOTAL: ${(tEnd - tStart) / 1e9}%.2fs")
-  
     (tEnd - tStart) / 1e9
   }
 
