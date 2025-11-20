@@ -200,10 +200,11 @@ object Application {
 
     val tripsPath =
       if (deploymentMode == "local")
-        Commons.getDatasetPath(deploymentMode, "trips/yellow_tripdata_2022-01.parquet")
+        Commons.getDatasetPath(deploymentMode, "sample-data/yellow_tripdata_2022-01.parquet")
       else
         Commons.getDatasetPath(deploymentMode, "trips/")
-    val zonesPath = Commons.getDatasetPath(deploymentMode, "zones/taxi_zone_lookup.csv")
+    val zonesPath = Commons.getDatasetPath(deploymentMode, if (deploymentMode == "local") "sample-data/taxi_zone_lookup.csv"
+      else "zones/taxi_zone_lookup.csv")
     val outputPath = Commons.getDatasetPath(writeMode, "output/results")
     val sqlContext = spark.sqlContext
     import sqlContext.implicits._
